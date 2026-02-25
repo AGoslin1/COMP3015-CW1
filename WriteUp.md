@@ -42,8 +42,15 @@ helper/ contains small utilities (texture loader, mesh loader, ect.).
 
 media/ contains textures and obj models loaded at runtime.
 
+I have also implemented a normalmap for the models to give them a more detailed and defined look,
+the normalmap is loaded as a texture and used in the fragment shader to calculate the lighting.
+
 youtube video:
 https://youtu.be/rpy5L-Xr4f8
 
 github repo:
 https://github.com/AGoslin1/COMP3015-CW1
+
+gen AI statement:
+all code is implemeted by me, I have not used any gen AI tools to write this code, I have only used gen AI
+in a teaching way to understand certain features.
