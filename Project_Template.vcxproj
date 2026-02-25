@@ -165,6 +165,7 @@
   <ItemGroup>
     <None Include="shader\basic_uniform.frag" />
     <None Include="shader\basic_uniform.vert" />
+    <None Include="WriteUp.md" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="drawable.h" />
