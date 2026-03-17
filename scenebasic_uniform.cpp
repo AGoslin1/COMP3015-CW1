@@ -13,9 +13,12 @@ using std::endl;
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/constants.hpp>
 
 #include "helper/glutils.h"
 #include "helper/texture.h"
+#include "helper/particleutils.h"
+#include "helper/random.h"
 
 #include <GLFW/glfw3.h>
 
@@ -31,14 +34,21 @@ using glm::mat3;
 
 static GLuint gDiffuseTex = 0;
 
+// RNG helper (preferred over std::rand for particles)
+static Random gRng;
+static GLuint gRandomTex1D = 0;
+
 //fly free camera
 static glm::vec3 cameraPos = glm::vec3(0.0f, 2.0f, 4.0f);
 static glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
 static glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-static float yaw = -90.0f; 
+static float yaw = -90.0f;
 static float pitch = 0.0f;
 static double lastX = 0.0, lastY = 0.0;
 static bool firstMouse = true;
+
+// sky particle ring center (will follow hecarim)
+static glm::vec3 particleRingCenter = glm::vec3(0.0f, 12.0f, 0.0f);
 
 //skybox geometry
 static const float skyboxVertices[] = {
@@ -103,12 +113,12 @@ static std::vector<float> gMinionBirthTimes;
 struct Spotlight {
     vec3 pos;
     vec3 target;
-    vec3 dir;       
-    float speed;      
+    vec3 dir;
+    float speed;
     float changeTimer;
     float changeInterval;
-    float range;      
-    float cutoffCos;  
+    float range;
+    float cutoffCos;
 };
 
 //number of lights active
@@ -119,6 +129,378 @@ static float randomRange(float a, float b) {
     float r = (float)std::rand() / (float)RAND_MAX;
     return a + r * (b - a);
 }
+
+// ------------------ Particle system ------------------
+static GLuint particleVAO = 0;
+static GLuint particleVBO = 0;           // quad vertices
+static GLuint particleInstanceVBO = 0;   // per-instance data
+static GLuint fireTex = 0;
+static GLSLProgram particleProg;
+// increase capacity slightly for dense crown
+static const int MAX_PARTICLES = 3000;
+
+// particle size tuning (smaller crown embers)
+static const float PARTICLE_BASE_SIZE = 0.05f;     // typical particle size (world units)
+static const float PARTICLE_SIZE_VARIANCE = 0.04f; // random variation added to base
+static const float PARTICLE_MIN_SIZE = 0.005f;     // clamp size when shrinking
+
+// crown / game state
+static bool crownEnabled = true;
+static bool gameLost = false;
+
+// Whisp entity
+struct Whisp {
+    glm::vec3 pos;
+    glm::vec3 vel;
+    bool alive;
+    float speed;
+    float radius; // collision radius
+};
+static Whisp theWhisp;
+
+// particle now carries a 'type' in addition to life/size
+struct Particle {
+    vec3 pos;
+    vec3 vel;
+    float life; // 1.0 = alive, 0 = dead
+    float size;
+    float type; // 0 = crown, 1 = explosion, 2 = whisp trail
+    bool alive;
+};
+
+static std::vector<Particle> particles;
+static float particleSpawnAccumulator = 0.0f;
+
+static void initParticleSystem()
+{
+    // unit quad centered at origin (will be billboarded in shader)
+    float quadVerts[] = {
+        -0.5f, -0.5f,
+         0.5f, -0.5f,
+         0.5f,  0.5f,
+        -0.5f, -0.5f,
+         0.5f,  0.5f,
+        -0.5f,  0.5f
+    };
+
+    glGenVertexArrays(1, &particleVAO);
+    glGenBuffers(1, &particleVBO);
+    glGenBuffers(1, &particleInstanceVBO);
+
+    glBindVertexArray(particleVAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, particleVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVerts), quadVerts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0); // vertex position
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
+    // instance buffer (we upload vec4 pos_size, vec4 life_pad)
+    glBindBuffer(GL_ARRAY_BUFFER, particleInstanceVBO);
+    // allocate some space initially
+    glBufferData(GL_ARRAY_BUFFER, MAX_PARTICLES * 8 * sizeof(float), nullptr, GL_STREAM_DRAW);
+
+    // layout locations in particle shader:
+    // location 1 = vec4 InstancePosSize (xyz = pos, w = size)
+    // location 2 = vec4 InstanceLifePad (x = life)
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glVertexAttribDivisor(1, 1);
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(4 * sizeof(float)));
+    glVertexAttribDivisor(2, 1);
+
+    glBindVertexArray(0);
+
+    particles.clear();
+    particles.resize(MAX_PARTICLES);
+    for (int i = 0; i < MAX_PARTICLES; ++i) {
+        particles[i].alive = false;
+        particles[i].life = 0.0f;
+        particles[i].type = 0.0f;
+    }
+
+    // load fire texture (ensure media/texture/fire.png exists; prefer RGBA with alpha)
+    fireTex = Texture::loadTexture("media/texture/fire.png");
+
+    // create random 1D texture used by particle shader (if desired)
+    if (gRandomTex1D == 0) {
+        gRandomTex1D = ParticleUtils::createRandomTex1D(1024);
+    }
+}
+
+static void spawnParticleRing(const vec3& center, float radius)
+{
+    for (int i = 0; i < (int)particles.size(); ++i) {
+        if (!particles[i].alive) {
+            // sample direction on unit circle using RNG helper
+            glm::vec3 c = gRng.uniformCircle(); // x=cos, y=sin
+            float jitter = gRng.nextFloat() * 0.06f - 0.03f; // small jitter for crown look
+            float r = radius + jitter;
+            float x = center.x + r * c.x;
+            float z = center.z + r * c.y;
+            // small vertical spread around head
+            float y = center.y + gRng.nextFloat() * 0.12f - 0.06f;
+
+            particles[i].pos = vec3(x, y, z);
+
+            // velocity: mostly radial/outward + gentle upward, crown should stay tight
+            vec3 outward = glm::normalize(vec3(c.x + gRng.nextFloat() * 0.04f - 0.02f, 0.0f, c.y + gRng.nextFloat() * 0.04f - 0.02f));
+            particles[i].vel = outward * (0.2f + gRng.nextFloat() * 0.6f) + vec3(0.0f, 0.45f + gRng.nextFloat() * 0.8f, 0.0f);
+
+            particles[i].life = 1.0f;
+            // smaller, controlled sizes for crown embers
+            particles[i].size = PARTICLE_BASE_SIZE + gRng.nextFloat() * PARTICLE_SIZE_VARIANCE;
+            particles[i].type = 0.0f; // crown
+            particles[i].alive = true;
+            break;
+        }
+    }
+}
+
+static void spawnParticleExplosion(const vec3& center, int count)
+{
+    int spawned = 0;
+    // first pass: prefer dead slots
+    for (int i = 0; i < (int)particles.size() && spawned < count; ++i) {
+        if (!particles[i].alive) {
+            // random direction in unit sphere
+            glm::vec3 dir = glm::normalize(glm::vec3(gRng.nextFloat() * 2.0f - 1.0f,
+                gRng.nextFloat() * 2.0f - 1.0f,
+                gRng.nextFloat() * 2.0f - 1.0f));
+            float speed = 2.0f + gRng.nextFloat() * 4.0f;
+            particles[i].pos = center + dir * (0.02f + gRng.nextFloat() * 0.08f);
+            particles[i].vel = dir * speed + vec3(0.0f, 0.6f + gRng.nextFloat() * 1.6f, 0.0f);
+            particles[i].life = 0.6f + gRng.nextFloat() * 0.9f;
+            particles[i].size = 0.03f + gRng.nextFloat() * 0.08f;
+            particles[i].type = 1.0f; // explosion type
+            particles[i].alive = true;
+            spawned++;
+        }
+    }
+
+    // second pass: overwrite low-priority slots if needed
+    for (int i = 0; i < (int)particles.size() && spawned < count; ++i) {
+        if (!particles[i].alive) continue; // already handled above
+        // overwrite any non-explosion particle (prefer whisp trail or oldest)
+        if (particles[i].type != 1.0f || particles[i].life < 0.3f) {
+            glm::vec3 dir = glm::normalize(glm::vec3(gRng.nextFloat() * 2.0f - 1.0f,
+                gRng.nextFloat() * 2.0f - 1.0f,
+                gRng.nextFloat() * 2.0f - 1.0f));
+            float speed = 2.0f + gRng.nextFloat() * 4.0f;
+            particles[i].pos = center + dir * (0.02f + gRng.nextFloat() * 0.08f);
+            particles[i].vel = dir * speed + vec3(0.0f, 0.6f + gRng.nextFloat() * 1.6f, 0.0f);
+            particles[i].life = 0.6f + gRng.nextFloat() * 0.9f;
+            particles[i].size = 0.03f + gRng.nextFloat() * 0.08f;
+            particles[i].type = 1.0f; // explosion type
+            particles[i].alive = true;
+            spawned++;
+        }
+    }
+
+    // final fallback: if still not enough, overwrite from start
+    for (int i = 0; i < (int)particles.size() && spawned < count; ++i) {
+        glm::vec3 dir = glm::normalize(glm::vec3(gRng.nextFloat() * 2.0f - 1.0f,
+            gRng.nextFloat() * 2.0f - 1.0f,
+            gRng.nextFloat() * 2.0f - 1.0f));
+        float speed = 2.0f + gRng.nextFloat() * 4.0f;
+        particles[i].pos = center + dir * (0.02f + gRng.nextFloat() * 0.08f);
+        particles[i].vel = dir * speed + vec3(0.0f, 0.6f + gRng.nextFloat() * 1.6f, 0.0f);
+        particles[i].life = 0.6f + gRng.nextFloat() * 0.9f;
+        particles[i].size = 0.03f + gRng.nextFloat() * 0.08f;
+        particles[i].type = 1.0f; // explosion type
+        particles[i].alive = true;
+        spawned++;
+    }
+}
+static void updateWhisp(float dt, const glm::vec3& headPos)
+{
+    if (!theWhisp.alive) return;
+
+    // target is passed in (head position)
+    glm::vec3 target = headPos;
+    glm::vec3 toTarget = target - theWhisp.pos;
+    float dist = glm::length(toTarget);
+
+    // simple steering
+    if (dist > 1e-6f) {
+        glm::vec3 desired = glm::normalize(toTarget);
+        float accel = 6.0f;
+        theWhisp.vel = glm::mix(theWhisp.vel, desired * theWhisp.speed, glm::clamp(accel * dt, 0.0f, 1.0f));
+    }
+    theWhisp.pos += theWhisp.vel * dt;
+
+    // spawn a thick trail: multiple dark whisp trail particles each frame
+    const int trailSpawnCount = 6; // make trail denser / thicker
+    for (int s = 0; s < trailSpawnCount; ++s) {
+        for (int i = 0; i < (int)particles.size(); ++i) {
+            if (!particles[i].alive) {
+                // spread larger around the whisp for a "thick" field
+                float spread = 0.18f + gRng.nextFloat() * 0.22f; // larger spread
+                glm::vec3 offset = glm::vec3((gRng.nextFloat() * 2.0f - 1.0f) * spread,
+                    (gRng.nextFloat() * 2.0f - 1.0f) * (spread * 0.6f),
+                    (gRng.nextFloat() * 2.0f - 1.0f) * spread);
+                particles[i].pos = theWhisp.pos + offset;
+                particles[i].vel = glm::vec3(gRng.nextFloat() * 0.12f - 0.06f, gRng.nextFloat() * 0.08f, gRng.nextFloat() * 0.12f - 0.06f);
+                particles[i].life = 0.8f + gRng.nextFloat() * 0.9f;
+                // bigger trail particles for visible thick field
+                particles[i].size = 0.015f + gRng.nextFloat() * 0.06f;
+                particles[i].type = 2.0f; // whisp trail
+                particles[i].alive = true;
+                break;
+            }
+        }
+    }
+
+    // collision with hecarim head
+    if (dist <= theWhisp.radius + 0.4f) {
+        // explode
+        spawnParticleExplosion(theWhisp.pos, 150);
+        // disable crown and mark loss
+        crownEnabled = false;
+        gameLost = true;
+        theWhisp.alive = false;
+        // show cursor
+        GLFWwindow* win = glfwGetCurrentContext();
+        if (win) glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        std::cout << "Whisp touched Hecarim: crown disabled - you lose\n";
+    }
+}
+
+static void updateParticles(float dt, const vec3& ringCenter)
+{
+    // spawn parameters - dense but tightly grouped for crown
+    const float spawnRatePerSecond = 300.0f; // crown spawn rate
+    const float ringRadius = 0.35f; // small crown radius
+
+    // Only accumulate/spawn crown particles when crown is enabled
+    if (crownEnabled) {
+        particleSpawnAccumulator += spawnRatePerSecond * dt;
+        while (particleSpawnAccumulator >= 1.0f) {
+            spawnParticleRing(ringCenter, ringRadius);
+            particleSpawnAccumulator -= 1.0f;
+        }
+    }
+
+    // update existing particles (always)
+    for (auto& p : particles) {
+        if (!p.alive) continue;
+        // basic physics
+        p.pos += p.vel * dt;
+        // gentle gravity/pull to keep arcs subtle (whisp trails may be less affected)
+        if (p.type == 2.0f) {
+            // whisp trail: slower fall
+            p.vel += vec3(0.0f, -0.15f, 0.0f) * dt;
+        }
+        else {
+            p.vel += vec3(0.0f, -0.4f, 0.0f) * dt;
+        }
+
+        // life decays at moderate rate so crown persists
+        float lifeDecay = 0.45f;
+        if (p.type == 1.0f) lifeDecay = 0.9f; // explosion dies faster
+        if (p.type == 2.0f) lifeDecay = 0.35f; // whisp trail lingers a bit
+        p.life -= lifeDecay * dt;
+        if (p.life <= 0.0f) {
+            p.alive = false;
+            p.life = 0.0f;
+        }
+
+        // slight shrink
+        p.size *= (1.0f - 0.10f * dt);
+        if (p.size < PARTICLE_MIN_SIZE) p.size = PARTICLE_MIN_SIZE;
+    }
+}
+
+static void renderParticles(const mat4& view, const mat4& projection)
+{
+    // Guard: only render if particle shader successfully linked
+    if (!particleProg.isLinked()) return;
+
+    // Need a fire texture to render
+    if (fireTex == 0) return;
+
+    // collect instance data for alive particles
+    std::vector<float> instanceData;
+    instanceData.reserve(particles.size() * 8);
+    int aliveCount = 0;
+    for (const auto& p : particles) {
+        if (!p.alive) continue;
+        // vec4 pos_size
+        instanceData.push_back(p.pos.x);
+        instanceData.push_back(p.pos.y);
+        instanceData.push_back(p.pos.z);
+        instanceData.push_back(p.size);
+        // vec4 life_pad: x = life, y = type, z = 0, w = 0
+        instanceData.push_back(p.life);         // x = life
+        instanceData.push_back(p.type);         // y = type id
+        instanceData.push_back(0.0f);           // z
+        instanceData.push_back(0.0f);           // w
+        ++aliveCount;
+    }
+    if (aliveCount == 0) return;
+
+    glBindBuffer(GL_ARRAY_BUFFER, particleInstanceVBO);
+    glBufferData(GL_ARRAY_BUFFER, instanceData.size() * sizeof(float), instanceData.data(), GL_STREAM_DRAW);
+
+    // render
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE); // additive blending for fire; whisp trails are dark so acceptable
+    glDepthMask(GL_FALSE); // don't write depth to allow proper blending of particles
+
+    particleProg.use();
+    particleProg.setUniform("Projection", projection);
+    particleProg.setUniform("View", view);
+    glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+
+    // make sure cameraFront is normalized
+    glm::vec3 camFront = glm::normalize(cameraFront);
+
+    // primary right vector
+    glm::vec3 camRight = glm::cross(camFront, worldUp);
+    if (glm::length(camRight) < 1e-4f) {
+        // camera is nearly parallel to worldUp (looking straight up/down)
+        // pick an alternate up to build a stable basis
+        glm::vec3 altUp(0.0f, 0.0f, 1.0f);
+        camRight = glm::cross(camFront, altUp);
+        if (glm::length(camRight) < 1e-4f) {
+            // last resort
+            camRight = glm::vec3(1.0f, 0.0f, 0.0f);
+        }
+    }
+    camRight = glm::normalize(camRight);
+    glm::vec3 camUp = glm::normalize(glm::cross(camRight, camFront));
+
+    particleProg.setUniform("CameraRight", camRight);
+    particleProg.setUniform("CameraUp", camUp);
+
+
+    // Bind textures
+    // fire texture at unit 6
+    particleProg.setUniform("FireTex", 6);
+    glActiveTexture(GL_TEXTURE0 + 6);
+    glBindTexture(GL_TEXTURE_2D, fireTex);
+
+    // random 1D texture at unit 7 (optional shader sampling)
+    if (gRandomTex1D != 0) {
+        particleProg.setUniform("RandomTex", 7);
+        glActiveTexture(GL_TEXTURE0 + 7);
+        glBindTexture(GL_TEXTURE_1D, gRandomTex1D);
+    }
+
+    glBindVertexArray(particleVAO);
+    glDrawArraysInstanced(GL_TRIANGLES, 0, 6, aliveCount);
+    glBindVertexArray(0);
+
+    // restore GL state
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+
+
+// ------------------ End particle system ------------------
 
 SceneBasic_Uniform::SceneBasic_Uniform() :
     tPrev(0),
@@ -132,7 +514,7 @@ SceneBasic_Uniform::SceneBasic_Uniform() :
     spawnTimer = 0.0f;
     nextSpawnInterval = 3.0f;
     maxMinions = 8;
-    hecarimPos = glm::vec3(0.0f, 1.5f, 0.0f); 
+    hecarimPos = glm::vec3(0.0f, 1.5f, 0.0f);
     hecarimYaw = 0.0f;
     thirdPersonLocked = true; //3rd person 
     prevTabPressed = false;
@@ -183,7 +565,7 @@ void SceneBasic_Uniform::initScene()
     minionTex = Texture::loadTexture("media/RedMinion.png");
 
     //skybox
-    skyboxTex = Texture::loadCubeMap("media/skybox/sky", ".jpg");
+    skyboxTex = Texture::loadCubeMap("media/skybox/sky", ".png");
     initSkyboxVAO(skyboxVAO, skyboxVBO);
 
     //initialize spotlights to NUM_LIGHTS
@@ -217,6 +599,26 @@ void SceneBasic_Uniform::initScene()
     }
 
     gMinionBirthTimes.clear();
+
+    // init particle system
+    initParticleSystem();
+
+    theWhisp.alive = true;
+    theWhisp.pos = hecarimPos + glm::vec3(6.0f, 2.0f, 6.0f); // spawn off to side
+    theWhisp.vel = glm::vec3(0.0f);
+    theWhisp.speed = 3.2f;
+    theWhisp.radius = 1.2f; // bigger whisp collision / influence radius
+
+    // compile particle shaders
+    try {
+        particleProg.compileShader("shader/particle.vert");
+        particleProg.compileShader("shader/particle.frag");
+        particleProg.link();
+    }
+    catch (GLSLProgramException& e) {
+        cerr << "Particle shader compile/link failed: " << e.what() << endl;
+        // continue without particles
+    }
 }
 
 void SceneBasic_Uniform::compile()
@@ -271,7 +673,7 @@ void SceneBasic_Uniform::update(float t)
             firstMouse = false;
         }
         float xoffset = float(xpos - lastX);
-        float yoffset = float(lastY - ypos); 
+        float yoffset = float(lastY - ypos);
         lastX = xpos;
         lastY = ypos;
 
@@ -309,23 +711,26 @@ void SceneBasic_Uniform::update(float t)
         moveVec += camRight * rightInput;
 
         if (glm::length(moveVec) > 0.001f) {
-            moveVec = glm::normalize(moveVec);
-            const float speed =10.0f; //move speed
-            hecarimPos += moveVec * speed * (deltaT > 0.0f ? deltaT : 0.016f);
+            // Only allow character movement if game not lost
+            if (!gameLost) {
+                moveVec = glm::normalize(moveVec);
+                const float speed = 10.0f; //move speed
+                hecarimPos += moveVec * speed * (deltaT > 0.0f ? deltaT : 0.016f);
 
-            float targetYaw = glm::degrees(std::atan2(moveVec.x, moveVec.z)) + 180.0f;
-            auto shortestAngleDiff = [](float fromDeg, float toDeg) -> float {
-                float diff = std::fmodf((toDeg - fromDeg + 540.0f), 360.0f) - 180.0f;
-                return diff;
-                };
-            float diff = shortestAngleDiff(hecarimYaw, targetYaw);
-            const float rotationSpeed = 360.0f;
-            float maxDelta = rotationSpeed * (deltaT > 0.0f ? deltaT : 0.016f);
-            diff = glm::clamp(diff, -maxDelta, maxDelta);
-            hecarimYaw += diff;
+                float targetYaw = glm::degrees(std::atan2(moveVec.x, moveVec.z)) + 180.0f;
+                auto shortestAngleDiff = [](float fromDeg, float toDeg) -> float {
+                    float diff = std::fmodf((toDeg - fromDeg + 540.0f), 360.0f) - 180.0f;
+                    return diff;
+                    };
+                float diff = shortestAngleDiff(hecarimYaw, targetYaw);
+                const float rotationSpeed = 360.0f;
+                float maxDelta = rotationSpeed * (deltaT > 0.0f ? deltaT : 0.016f);
+                diff = glm::clamp(diff, -maxDelta, maxDelta);
+                hecarimYaw += diff;
+            }
         }
 
-        // camera orbit
+        // camera orbit (follow the character even if gameLost)
         float followDist = 6.0f;
         float followHeight = 2.0f;
         glm::vec3 camDir = glm::normalize(cameraFront);
@@ -356,7 +761,7 @@ void SceneBasic_Uniform::update(float t)
     for (int i = 1; i < NUM_LIGHTS; ++i) {
         Spotlight& s = gSpotlights[i];
         s.changeTimer -= deltaT;
-       
+
         vec3 toTarget = vec3(s.target.x - s.pos.x, 0.0f, s.target.z - s.pos.z);
         float dist = glm::length(toTarget);
         if (dist > 0.01f) {
@@ -403,7 +808,7 @@ void SceneBasic_Uniform::update(float t)
     }
 
     int qState = glfwGetKey(win, GLFW_KEY_Q);
-    if (qState == GLFW_PRESS && !prevQPressed) {
+    if (qState == GLFW_PRESS && !prevQPressed && !gameLost) {
         float collectRadius = 1.5f;
         for (size_t i = 0; i < minions.size(); ++i) {
             auto& m = minions[i];
@@ -451,6 +856,20 @@ void SceneBasic_Uniform::update(float t)
     }
     else {
         gMinionBirthTimes.clear();
+    }
+
+    // place the crown above hecarim's head (tweak height if needed)
+    particleRingCenter = hecarimPos + glm::vec3(0.0f, 1.6f, 0.0f);
+
+    // update the whisp (spawns its thick trail)
+    updateWhisp(deltaT, hecarimPos + glm::vec3(0.0f, 1.6f, 0.0f));
+
+    // always update particle simulation (crown spawning is gated inside updateParticles)
+    updateParticles(deltaT, particleRingCenter);
+
+    // update crown particles only if enabled
+    if (crownEnabled) {
+        updateParticles(deltaT, particleRingCenter);
     }
 }
 
@@ -552,6 +971,9 @@ void SceneBasic_Uniform::render()
     model = mat4(1.0f);
     setMatrices();
     plane.render();
+
+    // render particle ring (crown) after ground/objects
+    renderParticles(view, projection);
 }
 
 void SceneBasic_Uniform::resize(int w, int h)
