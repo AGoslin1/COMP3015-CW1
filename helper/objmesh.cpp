@@ -230,50 +230,79 @@ void ObjMesh::ObjMeshData::generateNormalsIfNeeded() {
 }
 
 void ObjMesh::ObjMeshData::generateTangents() {
-    std::vector<vec3> tan1Accum(points.size());
-    std::vector<vec3> tan2Accum(points.size());
+    // If there are no texture coordinates, create a neutral tangent and return
+    if (texCoords.empty()) {
+        tangents.resize(points.size());
+        for (size_t i = 0; i < points.size(); ++i) {
+            tangents[i] = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+        }
+        return;
+    }
+
+    std::vector<vec3> tan1Accum(points.size(), vec3(0.0f));
+    std::vector<vec3> tan2Accum(points.size(), vec3(0.0f));
     tangents.resize(points.size());
 
-    // Compute the tangent std::vector
-    for( GLuint i = 0; i < faces.size(); i += 3 )
-    {
-        const vec3 &p1 = points[faces[i].pIdx];
-        const vec3 &p2 = points[faces[i+1].pIdx];
-        const vec3 &p3 = points[faces[i+2].pIdx];
+    // Accumulate tangents per vertex, but skip triangles with missing UV indices
+    for (GLuint i = 0; i + 2 < faces.size(); i += 3) {
+        int i0 = faces[i].pIdx, i1 = faces[i + 1].pIdx, i2 = faces[i + 2].pIdx;
+        int tc0 = faces[i].tcIdx, tc1 = faces[i + 1].tcIdx, tc2 = faces[i + 2].tcIdx;
 
-        const vec2 &tc1 = texCoords[faces[i].tcIdx];
-        const vec2 &tc2 = texCoords[faces[i+1].tcIdx];
-        const vec2 &tc3 = texCoords[faces[i+2].tcIdx];
+        // If any texture index is invalid, skip this triangle
+        if (tc0 < 0 || tc1 < 0 || tc2 < 0) continue;
+
+        const vec3& p1 = points[i0];
+        const vec3& p2 = points[i1];
+        const vec3& p3 = points[i2];
+
+        const vec2& uv1 = texCoords[tc0];
+        const vec2& uv2 = texCoords[tc1];
+        const vec2& uv3 = texCoords[tc2];
 
         vec3 q1 = p2 - p1;
         vec3 q2 = p3 - p1;
-        float s1 = tc2.x - tc1.x, s2 = tc3.x - tc1.x;
-        float t1 = tc2.y - tc1.y, t2 = tc3.y - tc1.y;
-        float r = 1.0f / (s1 * t2 - s2 * t1);
-        vec3 tan1( (t2*q1.x - t1*q2.x) * r,
-                   (t2*q1.y - t1*q2.y) * r,
-                   (t2*q1.z - t1*q2.z) * r);
-        vec3 tan2( (s1*q2.x - s2*q1.x) * r,
-                   (s1*q2.y - s2*q1.y) * r,
-                   (s1*q2.z - s2*q1.z) * r);
-        tan1Accum[faces[i].pIdx] += tan1;
-        tan1Accum[faces[i+1].pIdx] += tan1;
-        tan1Accum[faces[i+2].pIdx] += tan1;
-        tan2Accum[faces[i].pIdx] += tan2;
-        tan2Accum[faces[i+1].pIdx] += tan2;
-        tan2Accum[faces[i+2].pIdx] += tan2;
+        float s1 = uv2.x - uv1.x, s2 = uv3.x - uv1.x;
+        float t1 = uv2.y - uv1.y, t2 = uv3.y - uv1.y;
+        float denom = (s1 * t2 - s2 * t1);
+
+        // Skip degenerate UV triangles (avoid divide-by-zero)
+        if (fabs(denom) < 1e-8f) continue;
+
+        float r = 1.0f / denom;
+        vec3 tan1((t2 * q1.x - t1 * q2.x) * r,
+            (t2 * q1.y - t1 * q2.y) * r,
+            (t2 * q1.z - t1 * q2.z) * r);
+        vec3 tan2((s1 * q2.x - s2 * q1.x) * r,
+            (s1 * q2.y - s2 * q1.y) * r,
+            (s1 * q2.z - s2 * q1.z) * r);
+
+        tan1Accum[i0] += tan1;
+        tan1Accum[i1] += tan1;
+        tan1Accum[i2] += tan1;
+        tan2Accum[i0] += tan2;
+        tan2Accum[i1] += tan2;
+        tan2Accum[i2] += tan2;
     }
 
-    for( GLuint i = 0; i < points.size(); ++i )
-    {
-        const vec3 &n = normals[i];
-        vec3 &t1 = tan1Accum[i];
-        vec3 &t2 = tan2Accum[i];
+    // Orthonormalize and store tangents; fall back to a default tangent when needed
+    for (size_t i = 0; i < points.size(); ++i) {
+        const vec3& n = (i < normals.size()) ? normals[i] : vec3(0.0f, 1.0f, 0.0f);
+        vec3 t1 = tan1Accum[i];
+        vec3 t2 = tan2Accum[i];
+
+        if (glm::length(t1) < 1e-6f) {
+            // no accumulated tangent -> default tangent
+            tangents[i] = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            continue;
+        }
 
         // Gram-Schmidt orthogonalize
-        tangents[i] = glm::vec4(glm::normalize( t1 - (glm::dot(n,t1) * n) ), 0.0f);
-        // Store handedness in w
-        tangents[i].w = (glm::dot( glm::cross(n,t1), t2 ) < 0.0f) ? -1.0f : 1.0f;
+        vec3 T = glm::normalize(t1 - n * glm::dot(n, t1));
+
+        // Calculate handedness
+        float handedness = (glm::dot(glm::cross(n, t1), t2) < 0.0f) ? -1.0f : 1.0f;
+
+        tangents[i] = glm::vec4(T, handedness);
     }
 }
 

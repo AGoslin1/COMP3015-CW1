@@ -75,6 +75,9 @@
     <ClCompile Include="helper\grid.cpp">
       <Filter>helper</Filter>
     </ClCompile>
+    <ClCompile Include="helper\frustum.cpp">
+      <Filter>helper</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="shader\basic_uniform.frag">
@@ -88,6 +91,18 @@
       <Filter>shaders</Filter>
     </None>
     <None Include="shader\particle.vert">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shader\depth.frag">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shader\depth.vert">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shader\sky_noise.frag">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shader\sky_noise.vert">
       <Filter>shaders</Filter>
     </None>
   </ItemGroup>
@@ -159,6 +174,9 @@
       <Filter>helper</Filter>
     </ClInclude>
     <ClInclude Include="helper\random.h">
+      <Filter>helper</Filter>
+    </ClInclude>
+    <ClInclude Include="helper\frustum.h">
       <Filter>helper</Filter>
     </ClInclude>
   </ItemGroup>

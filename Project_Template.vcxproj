@@ -149,6 +149,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\..\..\Public\OpenGL\src\glad.c" />
     <ClCompile Include="helper\cube.cpp" />
+    <ClCompile Include="helper\frustum.cpp" />
     <ClCompile Include="helper\glslprogram.cpp" />
     <ClCompile Include="helper\glutils.cpp" />
     <ClCompile Include="helper\grid.cpp" />
@@ -167,14 +168,19 @@
   <ItemGroup>
     <None Include="shader\basic_uniform.frag" />
     <None Include="shader\basic_uniform.vert" />
+    <None Include="shader\depth.frag" />
+    <None Include="shader\depth.vert" />
     <None Include="shader\particle.frag" />
     <None Include="shader\particle.vert" />
+    <None Include="shader\sky_noise.frag" />
+    <None Include="shader\sky_noise.vert" />
     <None Include="WriteUp.md" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="drawable.h" />
     <ClInclude Include="helper\aabb.h" />
     <ClInclude Include="helper\cube.h" />
+    <ClInclude Include="helper\frustum.h" />
     <ClInclude Include="helper\glslprogram.h" />
     <ClInclude Include="helper\glutils.h" />
     <ClInclude Include="helper\grid.h" />
