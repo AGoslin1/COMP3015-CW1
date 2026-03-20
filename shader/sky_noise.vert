@@ -12,5 +12,5 @@ void main()
     vDir = aPosition;
 
     vec4 pos = Projection * ViewNoTrans * vec4(aPosition, 1.0);
-    gl_Position = pos.xyww; // keeps skybox at infinity
+    gl_Position = pos.xyww; //keeps skybox at infinity
 }

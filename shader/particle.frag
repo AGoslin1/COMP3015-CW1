@@ -1,14 +1,14 @@
 #version 460 core
 
-in vec3 FragPosView;   // fragment position (in view space) on particle quad plane
-flat in vec3 CenterView;    // particle center in view space
-flat in float RadiusView;   // particle radius (world units)
-flat in float Life;         // 0..1 (1 = new, 0 = dead)
-flat in float TypeID;       // 0=crown,1=explosion,2=whisp trail
+in vec3 FragPosView;   
+flat in vec3 CenterView;    
+flat in float RadiusView;   
+flat in float Life;        
+flat in float TypeID;      
 
 layout (location = 0) out vec4 FragColor;
 
-// view-space lighting direction
+//lighting direction
 const vec3 lightDirView = normalize(vec3(0.3, 0.8, 0.6));
 const float ambientBase = 0.12;
 const float specStrength = 0.5;
@@ -61,7 +61,7 @@ void main()
         }
     } else {
         // whisp trail: dark bluish -> grey
-        vec3 colYoung = vec3(0.06, 0.10, 0.16); // very dark blue
+        vec3 colYoung = vec3(0.06, 0.10, 0.16);
         vec3 colMid   = vec3(0.12, 0.16, 0.22);
         vec3 colGrey  = vec3(0.45, 0.48, 0.52);
         if (l > 0.5) {
@@ -80,12 +80,12 @@ void main()
     float spec = pow(max(dot(normal, halfVec), 0.0), specPower) * specStrength;
     float lighting = ambientBase + diff * 0.85 + spec;
 
-    // brightness envelope (a bit different per type)
+    //brightness envelope
     float age = 1.0 - l;
     float rampUp = smoothstep(0.0, 0.5, age);
     float rampDown = 1.0 - smoothstep(0.6, 1.0, age);
     float brightness = mix(0.25, 1.1, rampUp) * rampDown;
-    if (TypeID >= 1.0 && TypeID < 1.5) brightness *= 1.15; // explosion brighter
+    if (TypeID >= 1.0 && TypeID < 1.5) brightness *= 1.15;
     if (TypeID >= 2.0) brightness *= 0.6; // whisp darker
 
     vec3 finalColor = color * lighting * brightness;

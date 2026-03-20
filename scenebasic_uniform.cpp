@@ -35,7 +35,7 @@ static GLuint gDiffuseTex = 0;
 static Random gRng;
 static GLuint gRandomTex1D = 0;
 
-// camera
+//camera
 static glm::vec3 cameraPos = glm::vec3(0.0f, 2.0f, 4.0f);
 static glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
 static glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
@@ -44,7 +44,7 @@ static float pitch = 0.0f;
 static double lastX = 0.0, lastY = 0.0;
 static bool firstMouse = true;
 
-// shadows
+//shadows
 static std::vector<GLuint> shadowFBOs;
 static std::vector<GLuint> shadowTexs;
 static std::vector<glm::mat4> lightSpaces;
@@ -53,19 +53,19 @@ static std::unique_ptr<Frustum> lightFrustum;
 static const int SHADOW_SIZE = 2048;
 static GLSLProgram depthProg;
 
-// debug
+//debug
 static GLSLProgram debugProg;
 static GLuint debugVAO = 0;
 static GLuint debugVBO = 0;
 static bool debugShowShadow = true;
 
-// sky particle ring center
+//sky particle ring center
 static glm::vec3 particleRingCenter = glm::vec3(0.0f, 12.0f, 0.0f);
 
 static GLSLProgram skyboxProg;
 
 
-// skybox geometry
+//skybox geometry
 static const float skyboxVertices[] = {
     -1.0f,  1.0f, -1.0f,
     -1.0f, -1.0f, -1.0f,
@@ -142,7 +142,7 @@ static float randomRange(float a, float b) {
     return a + r * (b - a);
 }
 
-// particles
+//particles
 static GLuint particleVAO = 0;
 static GLuint particleVBO = 0;
 static GLuint particleInstanceVBO = 0;
@@ -552,7 +552,7 @@ void SceneBasic_Uniform::initScene()
         glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_LOW, 0, nullptr, GL_FALSE);
     }
 
-    // main textures
+    //main textures
     gDiffuseTex = Texture::loadTexture("media/lambert4.png");
     groundTex = Texture::loadTexture("media/ground.jpg");
     minionTex = Texture::loadTexture("media/RedMinion.png");
@@ -561,7 +561,7 @@ void SceneBasic_Uniform::initScene()
     prog.setUniform("DiffuseTex", 0);
     prog.setUniform("NormalMap", 1);
 
-    // skybox
+    //skybox
     initSkyboxVAO(skyboxVAO, skyboxVBO);
 
     gSpotlights.clear();
@@ -907,13 +907,12 @@ void SceneBasic_Uniform::render()
         gSpotlights[0].changeTimer = gSpotlights[0].changeInterval;
     }
 
-    // shadow pass
+    //shadow pass
     if (depthProg.isLinked() && !shadowFBOs.empty() && !shadowTexs.empty() && lightFrustum) {
         GLint prevViewport[4];
         glGetIntegerv(GL_VIEWPORT, prevViewport);
         glCullFace(GL_FRONT);
 
-        // Skip center light (index 0) when rendering shadow maps
         for (int i = 1; i < NUM_LIGHTS; ++i) {
             glm::vec3 lightPos = gSpotlights[i].pos;
             glm::vec3 lightTarget = gSpotlights[i].target;
@@ -970,10 +969,9 @@ void SceneBasic_Uniform::render()
         int available = maxTexUnits - reservedUnits;
         if (available < 1) available = 1;
 
-        int bindCount = std::min(NUM_LIGHTS - 1, available); // prefer binding non-center lights
+        int bindCount = std::min(NUM_LIGHTS - 1, available);
         int baseUnit = reservedUnits;
 
-        // bind order: put non-center lights first, center (0) last so it's effectively ignored
         std::vector<int> bindOrder;
         bindOrder.reserve(NUM_LIGHTS);
         for (int i = 1; i < NUM_LIGHTS; ++i) bindOrder.push_back(i);
@@ -990,7 +988,7 @@ void SceneBasic_Uniform::render()
 
         for (int k = bindCount; k < NUM_LIGHTS; ++k) {
             int i = bindOrder[k];
-            // ensure leftover entries don't reference a bound texture
+
             prog.setUniform((std::string("ShadowMap[") + std::to_string(i) + "]").c_str(), 0);
             prog.setUniform((std::string("LightSpace[") + std::to_string(i) + "]").c_str(), glm::mat4(1.0f));
         }
@@ -1023,7 +1021,6 @@ void SceneBasic_Uniform::render()
         vec3 dirView = vec3(view * vec4(s.dir, 0.0f));
         prog.setUniform((std::string("Lights[") + std::to_string(i) + "].Position").c_str(), posView);
 
-        // Disable the center light (index 0)
         if (i == 0) {
             prog.setUniform((std::string("Lights[") + std::to_string(i) + "].L").c_str(), vec3(0.0f));
             prog.setUniform((std::string("Lights[") + std::to_string(i) + "].La").c_str(), vec3(0.0f));
@@ -1038,7 +1035,7 @@ void SceneBasic_Uniform::render()
         prog.setUniform((std::string("Lights[") + std::to_string(i) + "].SpotExponent").c_str(), 30.0f);
     }
 
-    // Hecarim - legacy Blinn-Phong path
+    //Hecarim
     prog.setUniform("UseNormalMap", false);
     prog.setUniform("Material.Kd", vec3(0.8f));
     prog.setUniform("Material.Ks", vec3(0.3f));
@@ -1062,7 +1059,7 @@ void SceneBasic_Uniform::render()
     setMatrices();
     if (mesh) mesh->render();
 
-    // Minions - legacy path
+    //Minions
     prog.setUniform("UseNormalMap", false);
 
     if (minionMesh && minionTex) {
@@ -1087,7 +1084,7 @@ void SceneBasic_Uniform::render()
         }
     }
 
-    // Ground - legacy path
+    //Ground
     prog.setUniform("UseNormalMap", false);
     prog.setUniform("Material.Kd", vec3(0.7f));
     prog.setUniform("Material.Ks", vec3(0.0f));

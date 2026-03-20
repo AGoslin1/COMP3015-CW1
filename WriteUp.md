@@ -96,7 +96,7 @@ Gameplay / scene behavior additions (scenebasic_uniform.cpp)
 
 
   expensive parts of this project are the shadow mapping and particle systems, having a depth map per light and running a 3x3 PCF
-- per light in the shader is a large workeload on the GPU. The consequence of this is there is a high  VRAM usage.
+  per light in the shader is a large workeload on the GPU. The consequence of this is there is a high  VRAM usage.
 
 
   I got the idea for this game from my favourite game, League of Legends and I wanted to create a simple 3D game
