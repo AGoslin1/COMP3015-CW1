@@ -112,10 +112,10 @@ Gameplay / scene behavior additions (scenebasic_uniform.cpp)
 
 
 youtube video:
-
+https://youtu.be/bO_IhWbw0R4
 
 github repo:
-https://github.com/AGoslin1/COMP3015-CW1
+https://github.com/AGoslin1/COMP3015-CW2
 
 gen AI statement:
 all code is implemeted by me, I have not used any gen AI tools to write this code, I have only used gen AI

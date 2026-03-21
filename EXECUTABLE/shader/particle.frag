@@ -1,14 +1,14 @@
 #version 460 core
 
-in vec3 FragPosView;   
-flat in vec3 CenterView;    
-flat in float RadiusView;   
-flat in float Life;        
-flat in float TypeID;      
+in vec3 FragPosView;   // fragment position (in view space) on particle quad plane
+flat in vec3 CenterView;    // particle center in view space
+flat in float RadiusView;   // particle radius (world units)
+flat in float Life;         // 0..1 (1 = new, 0 = dead)
+flat in float TypeID;       // 0=crown,1=explosion,2=whisp trail
 
 layout (location = 0) out vec4 FragColor;
 
-//lighting direction
+// view-space lighting direction
 const vec3 lightDirView = normalize(vec3(0.3, 0.8, 0.6));
 const float ambientBase = 0.12;
 const float specStrength = 0.5;
@@ -28,7 +28,7 @@ void main()
     vec3 color;
 
     if (TypeID < 0.5) {
-        // crown
+        // crown / fire-like (orange -> red -> grey -> black)
         vec3 colOrange = vec3(1.0, 0.60, 0.10);
         vec3 colRed    = vec3(1.0, 0.12, 0.03);
         vec3 colGrey   = vec3(0.48, 0.48, 0.48);
@@ -44,7 +44,7 @@ void main()
             color = mix(colBlack, colGrey, t);
         }
     } else if (TypeID < 1.5) {
-        // explosion
+        // explosion (use brighter fire)
         vec3 colOrange = vec3(1.0, 0.70, 0.20);
         vec3 colRed    = vec3(1.0, 0.28, 0.06);
         vec3 colGrey   = vec3(0.6, 0.6, 0.6);
@@ -60,7 +60,8 @@ void main()
             color = mix(colBlack, colGrey, t);
         }
     } else {
-        vec3 colYoung = vec3(0.06, 0.10, 0.16);
+        // whisp trail: dark bluish -> grey
+        vec3 colYoung = vec3(0.06, 0.10, 0.16); // very dark blue
         vec3 colMid   = vec3(0.12, 0.16, 0.22);
         vec3 colGrey  = vec3(0.45, 0.48, 0.52);
         if (l > 0.5) {
@@ -79,13 +80,13 @@ void main()
     float spec = pow(max(dot(normal, halfVec), 0.0), specPower) * specStrength;
     float lighting = ambientBase + diff * 0.85 + spec;
 
-    //brightness envelope
+    // brightness envelope (a bit different per type)
     float age = 1.0 - l;
     float rampUp = smoothstep(0.0, 0.5, age);
     float rampDown = 1.0 - smoothstep(0.6, 1.0, age);
     float brightness = mix(0.25, 1.1, rampUp) * rampDown;
-    if (TypeID >= 1.0 && TypeID < 1.5) brightness *= 1.15;
-    if (TypeID >= 2.0) brightness *= 0.6; 
+    if (TypeID >= 1.0 && TypeID < 1.5) brightness *= 1.15; // explosion brighter
+    if (TypeID >= 2.0) brightness *= 0.6; // whisp darker
 
     vec3 finalColor = color * lighting * brightness;
 
